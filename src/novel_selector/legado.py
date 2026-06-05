@@ -12,6 +12,7 @@ from lxml import html as lxml_html
 
 from .db import source_id
 from .http import HttpClient
+from .logger import source_event
 from .models import Chapter, NovelCandidate
 from .text import clean_text, is_explicitly_complete
 
@@ -63,16 +64,34 @@ class LegadoClient:
         self.http = http
 
     def search(self, source: dict, keyword: str, page: int = 1) -> list[NovelCandidate]:
+        sid = source_id(source)
+        source_name = source.get("bookSourceName") or sid
         supported, reason = source_support_status(source)
         if not supported:
+            source_event(
+                "unsupported_source",
+                "WARNING",
+                source_id=sid,
+                source_name=source_name,
+                stage="search",
+                reason=reason,
+            )
             raise UnsupportedSourceError(reason)
         base_url = source.get("bookSourceUrl", "")
         url = render_url(str(source["searchUrl"]), keyword, page)
+        source_event(
+            "search_start",
+            source_id=sid,
+            source_name=source_name,
+            keyword=keyword,
+            page=page,
+            url=url,
+            base_url=base_url,
+        )
         fetched = self.http.get(url, base_url=base_url, headers=_headers(source))
         rule = source.get("ruleSearch") or {}
         items = evaluate_list(fetched.text, fetched.content_type, rule.get("bookList", ""))
         candidates: list[NovelCandidate] = []
-        sid = source_id(source)
         for item in items:
             title = clean_text(evaluate_value(item, rule.get("name", "")))
             author = clean_text(evaluate_value(item, rule.get("author", "")))
@@ -106,12 +125,30 @@ class LegadoClient:
                     },
                 )
             )
+        source_event(
+            "search_parsed",
+            source_id=sid,
+            source_name=source_name,
+            keyword=keyword,
+            fetched_url=fetched.url,
+            raw_items=len(items),
+            candidates=len(candidates),
+        )
         return candidates
 
     def enrich_book_info(self, source: dict, candidate: NovelCandidate) -> NovelCandidate:
         rule = source.get("ruleBookInfo") or {}
         if not rule:
             return candidate
+        sid = source_id(source)
+        source_name = source.get("bookSourceName") or sid
+        source_event(
+            "book_info_start",
+            source_id=sid,
+            source_name=source_name,
+            title=candidate.title,
+            book_url=candidate.book_url,
+        )
         fetched = self.http.get(candidate.book_url, headers=_headers(source))
         root: Any = fetched.text
         kind = clean_text(evaluate_value(root, rule.get("kind", ""))) or candidate.kind
@@ -127,13 +164,34 @@ class LegadoClient:
         toc_url = clean_text(evaluate_value(root, rule.get("tocUrl", "")))
         if toc_url:
             candidate.raw["toc_url"] = urljoin(fetched.url, toc_url)
+        source_event(
+            "book_info_parsed",
+            source_id=sid,
+            source_name=source_name,
+            title=candidate.title,
+            completed=candidate.completed,
+            has_intro=bool(candidate.intro),
+            has_toc_url=bool(toc_url),
+        )
         return candidate
 
     def chapters(self, source: dict, candidate: NovelCandidate, limit: int = 10) -> list[Chapter]:
         rule = source.get("ruleToc") or {}
         if not rule:
+            source_event(
+                "unsupported_source",
+                "WARNING",
+                source_id=source_id(source),
+                source_name=source.get("bookSourceName") or source_id(source),
+                stage="toc",
+                reason="missing_rule_toc",
+                title=candidate.title,
+            )
             raise UnsupportedSourceError("missing_rule_toc")
         toc_url = candidate.raw.get("toc_url") or candidate.book_url
+        sid = source_id(source)
+        source_name = source.get("bookSourceName") or sid
+        source_event("toc_start", source_id=sid, source_name=source_name, title=candidate.title, url=toc_url)
         fetched = self.http.get(toc_url, headers=_headers(source))
         items = evaluate_list(fetched.text, fetched.content_type, rule.get("chapterList", ""))
         chapters: list[Chapter] = []
@@ -143,17 +201,45 @@ class LegadoClient:
             if not title or not url:
                 continue
             chapters.append(Chapter(title=title, url=urljoin(fetched.url, url)))
+        source_event(
+            "toc_parsed",
+            source_id=sid,
+            source_name=source_name,
+            title=candidate.title,
+            raw_items=len(items),
+            chapters=len(chapters),
+        )
         return chapters
 
     def chapter_content(self, source: dict, chapter: Chapter) -> str:
         rule = source.get("ruleContent") or {}
         if not rule:
+            source_event(
+                "unsupported_source",
+                "WARNING",
+                source_id=source_id(source),
+                source_name=source.get("bookSourceName") or source_id(source),
+                stage="content",
+                reason="missing_rule_content",
+                chapter_title=chapter.title,
+            )
             raise UnsupportedSourceError("missing_rule_content")
+        sid = source_id(source)
+        source_name = source.get("bookSourceName") or sid
+        source_event("content_start", source_id=sid, source_name=source_name, chapter_title=chapter.title, url=chapter.url)
         fetched = self.http.get(chapter.url, headers=_headers(source))
         content = clean_text(evaluate_value(fetched.text, rule.get("content", "")))
         replace_regex = rule.get("replaceRegex")
         if replace_regex:
             content = _apply_replace_regex(content, replace_regex)
+        source_event(
+            "content_parsed",
+            source_id=sid,
+            source_name=source_name,
+            chapter_title=chapter.title,
+            chars=len(content),
+            empty=not bool(content),
+        )
         return content
 
 

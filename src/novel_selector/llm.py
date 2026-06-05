@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from openai import OpenAI
 
 from .config import Settings
+from .logger import llm_event, prompt_summary
 from .models import Recommendation, SearchSeed
 from .text import truncate_chars
 
@@ -60,6 +61,12 @@ class LLMClient:
                 "要求：覆盖不同题材，不要只围绕同义词；每个关键词 2-8 个汉字或词组；返回 JSON 数组字符串。\n\n"
                 f"偏好画像：\n{profile}\n"
             )
+            llm_event(
+                "request_start",
+                model=self.settings.openai_model,
+                purpose="generate_search_seeds",
+                prompt=prompt_summary(prompt),
+            )
             try:
                 response = self._client().chat.completions.create(
                     model=self.settings.openai_model,
@@ -67,12 +74,37 @@ class LLMClient:
                     temperature=0.9,
                 )
                 content = response.choices[0].message.content or "[]"
+                llm_event(
+                    "response_received",
+                    model=self.settings.openai_model,
+                    purpose="generate_search_seeds",
+                    raw_response=content,
+                )
                 parsed = json.loads(_extract_json(content))
                 for value in parsed:
                     if isinstance(value, str) and value.strip():
                         seeds.append(SearchSeed(value=value.strip(), strategy="llm_preference"))
-            except Exception:
+            except json.JSONDecodeError as exc:
+                llm_event(
+                    "parse_error",
+                    "ERROR",
+                    model=self.settings.openai_model,
+                    purpose="generate_search_seeds",
+                    error=str(exc),
+                )
                 seeds = []
+            except Exception as exc:
+                llm_event(
+                    "request_error",
+                    "ERROR",
+                    model=self.settings.openai_model,
+                    purpose="generate_search_seeds",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                seeds = []
+        else:
+            llm_event("fallback_used", purpose="generate_search_seeds", reason="missing_api_key")
         builtins = random.sample(FALLBACK_SEEDS, k=min(len(FALLBACK_SEEDS), count))
         reverse = random.sample(EXPLORATION_SEEDS, k=min(len(EXPLORATION_SEEDS), 4))
         seeds.extend(SearchSeed(value=s, strategy="builtin_genre") for s in builtins)
@@ -104,17 +136,140 @@ class LLMClient:
                 f"最多返回 {k} 项，按推荐程度降序。\n\n"
                 f"偏好画像：\n{profile}\n\n候选：\n{json.dumps(payload, ensure_ascii=False)}"
             )
+            llm_event(
+                "request_start",
+                model=self.settings.openai_model,
+                purpose="score_candidates",
+                candidate_count=len(rows),
+                requested_recommendations=k,
+                prompt=prompt_summary(prompt),
+            )
             try:
                 response = self._client().chat.completions.create(
                     model=self.settings.openai_model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,
                 )
-                parsed = json.loads(_extract_json(response.choices[0].message.content or "[]"))
+                content = response.choices[0].message.content or "[]"
+                llm_event(
+                    "response_received",
+                    model=self.settings.openai_model,
+                    purpose="score_candidates",
+                    raw_response=content,
+                )
+                parsed = json.loads(_extract_json(content))
                 return [_rec(item) for item in parsed[:k] if isinstance(item, dict)]
-            except Exception:
-                pass
+            except json.JSONDecodeError as exc:
+                llm_event(
+                    "parse_error",
+                    "ERROR",
+                    model=self.settings.openai_model,
+                    purpose="score_candidates",
+                    error=str(exc),
+                )
+            except Exception as exc:
+                llm_event(
+                    "request_error",
+                    "ERROR",
+                    model=self.settings.openai_model,
+                    purpose="score_candidates",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+        else:
+            llm_event("fallback_used", purpose="score_candidates", reason="missing_api_key", candidate_count=len(rows))
         return heuristic_recommendations(rows, k)
+
+    def summarize_local_novel(self, title: str, chunks: list[str]) -> str:
+        if not self.enabled:
+            raise RuntimeError("LLM is required to summarize local novels")
+        chunk_summaries: list[str] = []
+        for index, chunk in enumerate(chunks, 1):
+            prompt = (
+                "你正在帮助用户从自己喜欢的完本小说中提取阅读偏好。"
+                "请只基于给定文本，提取对偏好画像有用的信息。\n"
+                "输出中文要点，必须包含：重要人物画像、人物关系、核心冲突、情节走向、题材/关键词、爽点、雷点、文风、节奏、用户可能喜欢它的原因。\n\n"
+                f"小说标题：{title}\n"
+                f"分块：{index}/{len(chunks)}\n\n"
+                f"文本：\n{chunk}"
+            )
+            llm_event(
+                "request_start",
+                model=self.settings.openai_model,
+                purpose="summarize_local_novel_chunk",
+                title=title,
+                chunk_index=index,
+                chunk_total=len(chunks),
+                prompt=prompt_summary(prompt),
+            )
+            content = self._complete_text(prompt, purpose="summarize_local_novel_chunk", title=title)
+            chunk_summaries.append(content)
+        if len(chunk_summaries) == 1:
+            return chunk_summaries[0]
+        prompt = (
+            "下面是同一本完本小说不同分块的阅读摘要。请合并为一份去重后的单书偏好摘要，"
+            "突出这本书能反映出的用户口味。\n\n"
+            f"小说标题：{title}\n\n"
+            f"分块摘要：\n{json.dumps(chunk_summaries, ensure_ascii=False)}"
+        )
+        llm_event(
+            "request_start",
+            model=self.settings.openai_model,
+            purpose="merge_local_novel_summary",
+            title=title,
+            chunk_total=len(chunks),
+            prompt=prompt_summary(prompt),
+        )
+        return self._complete_text(prompt, purpose="merge_local_novel_summary", title=title)
+
+    def build_initial_profile(self, novel_summaries: list[str]) -> str:
+        if not self.enabled:
+            raise RuntimeError("LLM is required to build the initial profile")
+        prompt = (
+            "下面是用户明确喜欢的完本小说摘要。请综合它们生成一份初始用户偏好画像，"
+            "用于后续筛选和推荐网络小说。\n"
+            "要求：区分强偏好、弱偏好、明确避雷；提炼题材、人物、情节结构、节奏、文风、世界观、爽点与雷点；"
+            "不要只罗列书名，要抽象成可用于推荐判断的规则。\n\n"
+            f"小说摘要：\n{json.dumps(novel_summaries, ensure_ascii=False)}"
+        )
+        llm_event(
+            "request_start",
+            model=self.settings.openai_model,
+            purpose="build_initial_profile",
+            summary_count=len(novel_summaries),
+            prompt=prompt_summary(prompt),
+        )
+        return self._complete_text(prompt, purpose="build_initial_profile")
+
+    def _complete_text(self, prompt: str, purpose: str, title: str | None = None) -> str:
+        try:
+            response = self._client().chat.completions.create(
+                model=self.settings.openai_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            content = response.choices[0].message.content or ""
+            llm_event(
+                "response_received",
+                model=self.settings.openai_model,
+                purpose=purpose,
+                title=title,
+                raw_response=content,
+            )
+            if not content.strip():
+                raise RuntimeError(f"LLM returned empty response for {purpose}")
+            return content.strip()
+        except Exception as exc:
+            llm_event(
+                "request_error",
+                "ERROR",
+                model=self.settings.openai_model,
+                purpose=purpose,
+                title=title,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
 
 
 def heuristic_recommendations(rows: list, k: int) -> list[Recommendation]:
@@ -157,4 +312,3 @@ def _extract_json(content: str) -> str:
     start = min([i for i in [content.find("["), content.find("{")] if i >= 0], default=0)
     end = max(content.rfind("]"), content.rfind("}"))
     return content[start : end + 1] if end >= start else content
-

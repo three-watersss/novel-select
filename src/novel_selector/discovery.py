@@ -5,6 +5,7 @@ from collections import Counter
 from .db import Database, source_id
 from .legado import LegadoClient, UnsupportedSourceError, source_support_status
 from .llm import LLMClient
+from .logger import source_event, workflow_event
 from .models import NovelCandidate, SearchSeed
 from .text import novel_fingerprint
 
@@ -29,6 +30,14 @@ class DiscoveryService:
             else self.llm.generate_search_seeds(profile)
         )
         run_id = self.db.create_discovery_run(limit, seeds)
+        workflow_event(
+            "discover_run_created",
+            run_id=run_id,
+            limit=limit,
+            source_limit=source_limit,
+            max_searches=max_searches,
+            seeds=[seed.value for seed in seeds],
+        )
         found = 0
         candidates = 0
         stats: Counter = Counter()
@@ -50,10 +59,27 @@ class DiscoveryService:
                     results = self.legado.search(source, seed.value)
                 except UnsupportedSourceError as exc:
                     self.db.update_source_health(sid, "unsupported", str(exc))
+                    source_event(
+                        "search_skipped",
+                        "WARNING",
+                        source_id=sid,
+                        source_name=source.get("bookSourceName") or sid,
+                        keyword=seed.value,
+                        reason=str(exc),
+                    )
                     stats["unsupported_sources"] += 1
                     continue
                 except Exception as exc:
                     self.db.update_source_health(sid, "error", str(exc)[:500])
+                    source_event(
+                        "search_error",
+                        "ERROR",
+                        source_id=sid,
+                        source_name=source.get("bookSourceName") or sid,
+                        keyword=seed.value,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
                     stats["source_errors"] += 1
                     continue
                 searches += 1
@@ -82,7 +108,17 @@ class DiscoveryService:
             return candidate
         try:
             return self.legado.enrich_book_info(source, candidate)
-        except Exception:
+        except Exception as exc:
+            sid = source_id(source)
+            source_event(
+                "book_info_error",
+                "WARNING",
+                source_id=sid,
+                source_name=source.get("bookSourceName") or sid,
+                title=candidate.title,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
             return candidate
 
 

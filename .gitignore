@@ -5,4 +5,7 @@ __pycache__/
 .ruff_cache/
 .env
 data/
+logs/
+novels/*.txt
+novels/**/*.txt
 *.sqlite3

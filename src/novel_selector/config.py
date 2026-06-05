@@ -17,6 +17,13 @@ class Settings:
     openai_model: str
     request_timeout: float
     user_agent: str
+    log_dir: Path
+    log_level: str
+    log_max_file_bytes: int
+    log_backups: int
+    log_max_dir_bytes: int
+    novels_dir: Path
+    context_window: int
 
 
 def load_settings() -> Settings:
@@ -32,6 +39,13 @@ def load_settings() -> Settings:
             "NOVEL_SELECTOR_USER_AGENT",
             "novel-selector/0.1 (+https://github.com/aoaostar/legado-compatible)",
         ),
+        log_dir=Path(os.getenv("NOVEL_SELECTOR_LOG_DIR", "logs")),
+        log_level=os.getenv("NOVEL_SELECTOR_LOG_LEVEL", "INFO"),
+        log_max_file_bytes=int(os.getenv("NOVEL_SELECTOR_LOG_MAX_FILE_BYTES", str(5 * 1024 * 1024))),
+        log_backups=int(os.getenv("NOVEL_SELECTOR_LOG_BACKUPS", "3")),
+        log_max_dir_bytes=int(os.getenv("NOVEL_SELECTOR_LOG_MAX_DIR_BYTES", str(50 * 1024 * 1024))),
+        novels_dir=Path(os.getenv("NOVEL_SELECTOR_NOVELS_DIR", "novels")),
+        context_window=int(os.getenv("NOVEL_SELECTOR_CONTEXT_WINDOW", "1000000")),
     )
 
 

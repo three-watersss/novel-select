@@ -344,6 +344,21 @@ class Database:
             return "尚未记录明确偏好。请根据反馈理由逐步学习。"
         return "\n".join(f"- [{r['created_at']}] {r['event_type']}: {r['content']}" for r in rows)
 
+    def has_preference_events(self) -> bool:
+        with self.connect() as conn:
+            row = conn.execute("SELECT 1 FROM preference_events LIMIT 1").fetchone()
+            return row is not None
+
+    def add_preference_event(self, event_type: str, content: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO preference_events(event_type, content, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (event_type, content, utc_now()),
+            )
+
     def recommendable_samples(self, limit: int) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return list(
