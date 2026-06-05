@@ -6,44 +6,88 @@
 
 - 项目是 Python CLI MVP，使用 `uv` 管理依赖。
 - 本地配置通过 `.env` 读取，`.env` 已被 `.gitignore` 忽略。
-- 当前主流程已跑通，但还属于原型：
+- 产品核心已调整为“本地喜欢小说冷启动画像 + 在线书源发现 + 试读推荐 + 反馈循环”。
+- 首次使用前需要在与 `src/` 同级的 `novels/` 目录中放入至少 20 本用户喜欢的完本小说 `.txt` 文件。
+- `init` 会读取 `novels/`，按章节边界切块，逐本交给 LLM 总结，再汇总生成 `initial_profile` 偏好画像。
+- 已初始化过偏好画像时，重复执行 `init` 会提示用户先执行 `clear`，不会重复消耗 LLM。
+- 当前主流程：
+  - `init`：初始化数据库，并根据本地喜欢小说构建初始偏好画像。
+  - `clear`：删除本地 SQLite 数据库，重置到未初始化状态；不删除 `novels/`、`.env`、`logs/`。
   - `sync-sources`：同步 Legado/“阅读”书源 JSON。
   - `discover`：探索明确完本小说，并记录已探索指纹，后续不再重复探索。
   - `sample`：抓取候选小说前若干章试读文本。
   - `recommend`：调用 OpenAI 兼容 LLM 阅读样本并推荐。
   - `feedback`：记录选择或跳过理由，并写入偏好事件。
-- 已验证命令：
+- 已验证：
 
 ```bash
-uv run pytest
-uv run novel-selector sync-sources
-uv run novel-selector discover --limit 5 --source-limit 10 --max-searches 10 --seed 智斗
-uv run novel-selector sample --limit 3 --chapters 10
-uv run novel-selector recommend --k 2 --pool-size 10
-uv run novel-selector feedback
+uv run pytest  # 15 passed
+uv run novel-selector --help
+uv run novel-selector init  # novels/ 不足 20 本时会提示补充本地喜欢小说
 ```
 
-## 重点任务
+## 已完成重点任务
 
-### 1. 构建完整日志系统
+### 1. 完整日志系统
 
-目标：能完整记录工作流关键信息和 LLM 对话，同时自动清理过旧日志，避免无限增长。
+- 新增统一日志模块。
+- 日志分为：
+  - `workflow.log`：命令开始/结束、参数、统计信息、失败原因。
+  - `source.log`：书源请求、解析结果、超时、403、规则不支持原因。
+  - `llm.log`：模型、请求用途、prompt 摘要、原始响应、解析错误。
+- 日志默认保存在 `logs/`，且 `logs/` 已加入 `.gitignore`。
+- 支持按单文件大小轮转和按总日志目录大小清理最早日志。
+- CLI 支持 `--log-level`，也支持 `NOVEL_SELECTOR_LOG_LEVEL`。
+- 日志会脱敏 API key、authorization、token 等敏感字段。
 
-要求：
-- 增加统一日志模块，不要在业务代码里散落 `print`。
-- 日志至少分为：
-  - workflow 日志：命令开始/结束、参数、统计信息、失败原因。
-  - source 日志：书源请求、解析结果、超时、403、规则不支持原因。
-  - llm 日志：模型、请求用途、prompt 摘要、原始响应、解析错误。
-- 日志文件保存在本地忽略目录，例如 `logs/`。
-- `logs/` 必须加入 `.gitignore`。
-- 支持轮转或清理策略：
-  - 按文件大小轮转，或
-  - 按总日志目录大小上限删除最早日志。
-- CLI 增加可选参数或环境变量控制日志级别。
-- 避免在默认日志中泄露 API key。
+### 2. 初始偏好画像冷启动
 
-### 2. 扩展 Legado/“阅读”书源支持
+- 新增 `novels/` 目录作为用户喜欢的完本小说输入源。
+- 除 `clear` 和帮助命令外，CLI 执行前会检查 `novels/` 至少有 20 个非空 `.txt` 文件。
+- 新增配置：
+  - `NOVEL_SELECTOR_NOVELS_DIR=novels`
+  - `NOVEL_SELECTOR_CONTEXT_WINDOW=1000000`
+- `init` 构建初始画像流程：
+  - 读取本地小说，支持 `utf-8-sig`、`utf-8`、`gb18030`。
+  - 优先按章节标题切块，不为凑固定长度在章节中间切块。
+  - 根据上下文窗口自动计算块大小，并预留 prompt、输出和安全余量。
+  - 单章过长时按段落兜底切分，并写入日志。
+  - 每本小说先生成单书摘要，再将所有单书摘要汇总为初始用户偏好画像。
+  - 最终画像写入 `preference_events`，事件类型为 `initial_profile`。
+- 不缓存单书摘要；每次重置后重新初始化会重新生成。
+
+### 3. 重置命令
+
+- 新增：
+
+```bash
+uv run novel-selector clear
+uv run novel-selector clear --yes
+```
+
+- `clear` 删除当前配置指向的 SQLite 数据库及 WAL/SHM 文件。
+- `clear` 不删除 `novels/`、`.env`、`logs/`。
+- 默认需要用户确认；`--yes` 可跳过确认。
+
+### 4. CLI 体验与诊断命令
+
+- 裸命令会进入交互式 CLI：
+
+```bash
+uv run novel-selector
+```
+
+- 交互模式输入 `/` 会弹出命令列表，显示命令名和简短说明；支持键盘选择，终端支持时可用鼠标选择。
+- 原脚本式命令继续保留，例如 `uv run novel-selector discover --limit 20 --seed 智斗`。
+- 新增只读/诊断命令：
+  - `status`：展示数据库、书源、候选、采样、推荐、反馈和画像状态。
+  - `show-profile`：显示当前偏好画像；画像不存在时提示先执行 `init`。
+  - `doctor`：检查 `.env`、LLM 配置、`novels/` 数量、数据库初始化、画像和日志目录。
+- `status`、`show-profile`、`doctor` 会绕过 `novels/` 20 本前置检查，便于未初始化时排查问题。
+
+## 下一批重点任务
+
+### 1. 扩展 Legado/“阅读”书源支持
 
 目标：显著提高真实书源的搜索、目录、正文抓取成功率。
 
@@ -65,9 +109,9 @@ uv run novel-selector feedback
   - 需要 WebView、登录、验证码、人机验证的源继续标记 unsupported。
 - 为每类规则增加 fixture 测试，避免兼容一个源时破坏另一个源。
 
-### 3. 新增书源过滤 CLI
+### 2. 新增书源过滤 CLI
 
-目标：建立符合本产品要求的书源白名单，减少 discover 阶段无效请求。
+目标：建立符合本产品要求的书源白名单，减少 `discover` 阶段无效请求。
 
 新增命令建议：
 
@@ -97,6 +141,22 @@ uv run novel-selector filter-sources
   - 完本状态不可判断源数量。
   - 失败最多的错误类型。
 
+### 3. 偏好画像迭代机制
+
+目标：让反馈真正改变后续发现、采样和推荐策略。
+
+建议：
+- 将 `feedback` 从单纯追加事件升级为“事件追加 + 画像更新”。
+- 每次反馈后调用 LLM 读取旧画像和本次反馈，生成新版结构化偏好画像。
+- 保留画像版本历史，避免覆盖后无法回溯。
+- 将 `discover` 的 LLM 搜索种子生成和 `recommend` 的评分 prompt 都改为读取最新版画像。
+- 对跳过原因做结构化标签，例如：
+  - 降智反派。
+  - 题材太短。
+  - 节奏水。
+  - 后宫/套路爽文。
+  - 文风不合。
+
 ## 其他建议任务
 
 - 改进候选生成：
@@ -115,15 +175,18 @@ uv run novel-selector filter-sources
   - 增加迁移机制。
   - 增加 source capability 表。
   - 增加 sample 失败原因表。
+  - 增加画像版本表或画像快照表。
 - 改进 CLI 体验：
-  - 增加 `status` 命令，展示数据库统计、可用源数量、待采样候选数量。
-  - 增加 `show-profile` 命令，查看当前偏好画像。
-  - 增加 `reset-dev-data` 命令，用于清理本地测试数据。
+  - 为交互式 CLI 增加更细的参数表单，例如 `discover` 选择后逐项询问 `limit`、`seed`。
+  - 增加命令历史和最近一次执行结果摘要。
+  - 增加 `status --json`，方便脚本读取状态。
 
 ## 当前已知限制
 
+- `init` 需要至少 20 本本地喜欢小说，当前 `novels/` 不足时所有实际 CLI 命令都会被阻止，只有 `clear` 和帮助命令可运行。
+- `init` 会重新读取所有本地小说并调用 LLM，不缓存单书摘要；20 本长篇小说可能耗时较长、消耗较多 token。
+- 章节识别依赖常见章节标题格式；极端格式的 txt 可能退化为长章节兜底切分。
 - 真实书源失败率较高，常见失败包括 403、超时、目录为空、正文为空、规则暂不支持。
 - 目前需要手动 `--seed` 才更容易稳定发现候选。
 - 采样成功率依赖书源规则兼容度。
 - 当前 LLM 推荐可能返回低分“不推荐”，CLI 已能提示 LLM 没返回推荐，但推荐语义仍需继续细化。
-

@@ -18,10 +18,10 @@ def utc_now() -> str:
 class Database:
     def __init__(self, path: Path):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
@@ -349,6 +349,73 @@ class Database:
             row = conn.execute("SELECT 1 FROM preference_events LIMIT 1").fetchone()
             return row is not None
 
+    def is_initialized(self) -> bool:
+        if not self.path.exists():
+            return False
+        try:
+            with sqlite3.connect(self.path) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'preference_events'"
+                ).fetchone()
+                return row is not None
+        except sqlite3.DatabaseError:
+            return False
+
+    def latest_preference_event(self) -> sqlite3.Row | None:
+        if not self.is_initialized():
+            return None
+        with self.connect() as conn:
+            return conn.execute(
+                "SELECT event_type, content, created_at FROM preference_events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+
+    def stats(self) -> dict:
+        empty = {
+            "initialized": False,
+            "sources": 0,
+            "source_health": {},
+            "novels": 0,
+            "completed_novels": 0,
+            "samples": 0,
+            "pending_samples": 0,
+            "recommendation_runs": 0,
+            "latest_recommendation_at": None,
+            "feedback_events": 0,
+            "preference_events": 0,
+            "has_initial_profile": False,
+        }
+        if not self.is_initialized():
+            return empty
+        with self.connect() as conn:
+            stats = dict(empty)
+            stats["initialized"] = True
+            stats["sources"] = _count(conn, "sources")
+            stats["novels"] = _count(conn, "novels")
+            stats["completed_novels"] = _count(conn, "novels", "completed = 1")
+            stats["samples"] = _count(conn, "samples")
+            stats["pending_samples"] = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM novels n
+                LEFT JOIN samples s ON s.novel_id = n.id
+                WHERE n.completed = 1 AND s.novel_id IS NULL
+                """
+            ).fetchone()[0]
+            stats["recommendation_runs"] = _count(conn, "recommendation_runs")
+            row = conn.execute("SELECT created_at FROM recommendation_runs ORDER BY id DESC LIMIT 1").fetchone()
+            stats["latest_recommendation_at"] = row[0] if row else None
+            stats["feedback_events"] = _count(conn, "feedback_events")
+            stats["preference_events"] = _count(conn, "preference_events")
+            stats["has_initial_profile"] = (
+                conn.execute("SELECT 1 FROM preference_events WHERE event_type = 'initial_profile' LIMIT 1").fetchone()
+                is not None
+            )
+            stats["source_health"] = {
+                row["status"]: row["count"]
+                for row in conn.execute("SELECT status, COUNT(*) AS count FROM source_health GROUP BY status")
+            }
+            return stats
+
     def add_preference_event(self, event_type: str, content: str) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -452,3 +519,10 @@ class Database:
 def source_id(source: dict) -> str:
     raw = f"{source.get('bookSourceName', '')}::{source.get('bookSourceUrl', '')}"
     return novel_fingerprint(raw, str(source.get("customOrder", "")))[:16]
+
+
+def _count(conn: sqlite3.Connection, table: str, where: str | None = None) -> int:
+    sql = f"SELECT COUNT(*) FROM {table}"
+    if where:
+        sql += f" WHERE {where}"
+    return int(conn.execute(sql).fetchone()[0])

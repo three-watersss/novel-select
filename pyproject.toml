@@ -10,6 +10,7 @@ dependencies = [
     "jsonpath-ng>=1.6.1",
     "lxml>=5.3.0",
     "openai>=1.54.0",
+    "prompt-toolkit>=3.0.48",
 ]
 
 [dependency-groups]

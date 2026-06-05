@@ -35,6 +35,14 @@ NOVEL_SELECTOR_CONTEXT_WINDOW=1000000
 
 ## 使用
 
+进入交互式 CLI：
+
+```bash
+uv run novel-selector
+```
+
+在交互模式中输入 `/` 可以弹出命令列表，使用上下键或鼠标选择命令。也可以继续使用脚本式命令：
+
 ```bash
 uv run novel-selector init
 uv run novel-selector sync-sources
@@ -43,6 +51,9 @@ uv run novel-selector discover --limit 100 --seed 智斗 --seed 经营
 uv run novel-selector sample --limit 30
 uv run novel-selector recommend --k 5
 uv run novel-selector feedback
+uv run novel-selector status
+uv run novel-selector show-profile
+uv run novel-selector doctor
 ```
 
 重置本地数据库和偏好画像：
