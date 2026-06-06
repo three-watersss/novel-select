@@ -7,7 +7,7 @@
 - 项目是 Python CLI MVP，使用 `uv` 管理依赖。
 - 本地配置通过 `.env` 读取，`.env` 已被 `.gitignore` 忽略。
 - 产品核心已调整为“本地喜欢小说冷启动画像 + 在线书源发现 + 试读推荐 + 反馈循环”。
-- 首次使用前需要在与 `src/` 同级的 `novels/` 目录中放入至少 20 本用户喜欢的完本小说 `.txt` 文件。
+- 首次使用前需要在与 `src/` 同级的 `novels/` 目录中放入至少 10 本用户喜欢的完本小说 `.txt` 文件。
 - `init` 会读取 `novels/`，按章节边界切块，逐本交给 LLM 总结，再汇总生成 `initial_profile` 偏好画像。
 - 已初始化过偏好画像时，重复执行 `init` 会提示用户先执行 `clear`，不会重复消耗 LLM。
 - 当前主流程：
@@ -23,7 +23,7 @@
 ```bash
 uv run pytest  # 15 passed
 uv run novel-selector --help
-uv run novel-selector init  # novels/ 不足 20 本时会提示补充本地喜欢小说
+uv run novel-selector init  # novels/ 不足 10 本时会提示补充本地喜欢小说
 ```
 
 ## 已完成重点任务
@@ -56,7 +56,7 @@ uv run novel-selector init  # novels/ 不足 20 本时会提示补充本地喜�
 ### 2. 初始偏好画像冷启动
 
 - 新增 `novels/` 目录作为用户喜欢的完本小说输入源。
-- 除 `clear` 和帮助命令外，CLI 执行前会检查 `novels/` 至少有 20 个非空 `.txt` 文件。
+- 除 `clear` 和帮助命令外，CLI 执行前会检查 `novels/` 至少有 10 个非空 `.txt` 文件。
 - 新增配置：
   - `NOVEL_SELECTOR_NOVELS_DIR=novels`
   - `NOVEL_SELECTOR_CONTEXT_WINDOW=1000000`
@@ -67,7 +67,7 @@ uv run novel-selector init  # novels/ 不足 20 本时会提示补充本地喜�
   - 单章过长时按段落兜底切分，并写入日志。
   - 每本小说先生成单书摘要，再将所有单书摘要汇总为初始用户偏好画像。
   - 最终画像写入 `preference_events`，事件类型为 `initial_profile`。
-- 不缓存单书摘要；每次重置后重新初始化会重新生成。
+- 单书摘要会按小说内容 hash 和上下文窗口保存到 `local_novel_summaries`，重新执行 `init` 时可复用未变化书籍的中间结果。
 
 ### 3. 重置命令
 
@@ -96,7 +96,7 @@ uv run novel-selector
   - `status`：展示数据库、书源、候选、采样、推荐、反馈和画像状态。
   - `show-profile`：显示当前偏好画像；画像不存在时提示先执行 `init`。
   - `doctor`：检查 `.env`、LLM 配置、`novels/` 数量、数据库初始化、画像和日志目录。
-- `status`、`show-profile`、`doctor` 会绕过 `novels/` 20 本前置检查，便于未初始化时排查问题。
+- `status`、`show-profile`、`doctor` 会绕过 `novels/` 10 本前置检查，便于未初始化时排查问题。
 
 ## 下一批重点任务
 
@@ -196,8 +196,8 @@ uv run novel-selector filter-sources
 
 ## 当前已知限制
 
-- `init` 需要至少 20 本本地喜欢小说，当前 `novels/` 不足时所有实际 CLI 命令都会被阻止，只有 `clear` 和帮助命令可运行。
-- `init` 会重新读取所有本地小说并调用 LLM，不缓存单书摘要；20 本长篇小说可能耗时较长、消耗较多 token。
+- `init` 需要至少 10 本本地喜欢小说，当前 `novels/` 不足时所有实际 CLI 命令都会被阻止，只有 `clear`、诊断类命令和帮助命令可运行。
+- `init` 会重新读取所有本地小说；单书摘要已缓存，内容未变化时会复用，但首次总结长篇小说仍可能耗时较长、消耗较多 token。
 - 章节识别依赖常见章节标题格式；极端格式的 txt 可能退化为长章节兜底切分。
 - 真实书源失败率较高，常见失败包括 403、超时、目录为空、正文为空、规则暂不支持。
 - 目前需要手动 `--seed` 才更容易稳定发现候选。

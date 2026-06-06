@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,7 @@ from .llm import LLMClient
 from .logger import llm_event, workflow_event
 
 
-MIN_PROFILE_NOVELS = 20
+MIN_PROFILE_NOVELS = 10
 ENCODINGS = ("utf-8-sig", "utf-8", "gb18030")
 CHAPTER_HEADING = re.compile(
     r"^\s*(?:"
@@ -73,6 +74,10 @@ def read_local_novel(path: Path) -> LocalNovel:
 def normalize_text(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return "\n".join(line.rstrip() for line in text.splitlines()).strip()
+
+
+def local_novel_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def chunk_size_for_context(context_window: int) -> int:
@@ -165,12 +170,41 @@ class InitialProfileService:
         summaries: list[str] = []
         for path in paths:
             novel = read_local_novel(path)
+            content_hash = local_novel_hash(novel.text)
+            cached = self.db.cached_local_novel_summary(content_hash, self.context_window)
+            if cached is not None:
+                summaries.append(cached)
+                workflow_event(
+                    "local_novel_summary_cache_hit",
+                    title=novel.title,
+                    path=path,
+                    content_hash=content_hash[:12],
+                )
+                continue
             chunks = split_novel_into_chunks(novel, self.context_window)
             llm_event("novel_summary_start", title=novel.title, path=path, chunks=len(chunks))
             try:
-                summaries.append(self.llm.summarize_local_novel(novel.title, [chunk.text for chunk in chunks]))
+                summary = self.llm.summarize_local_novel(novel.title, [chunk.text for chunk in chunks])
             except Exception as exc:
                 raise InitialProfileError(f"生成《{novel.title}》的单书摘要失败：{exc}") from exc
+            self.db.save_local_novel_summary(
+                content_hash=content_hash,
+                context_window=self.context_window,
+                path=path,
+                title=novel.title,
+                text_chars=len(novel.text),
+                chunk_count=len(chunks),
+                summary=summary,
+            )
+            summaries.append(summary)
+            workflow_event(
+                "local_novel_summary_saved",
+                title=novel.title,
+                path=path,
+                content_hash=content_hash[:12],
+                chunks=len(chunks),
+                chars=len(novel.text),
+            )
         try:
             profile = self.llm.build_initial_profile(summaries)
         except Exception as exc:

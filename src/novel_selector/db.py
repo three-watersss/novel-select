@@ -166,6 +166,19 @@ class Database:
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS local_novel_summaries (
+                    content_hash TEXT NOT NULL,
+                    context_window INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    text_chars INTEGER NOT NULL,
+                    chunk_count INTEGER NOT NULL,
+                    summary TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(content_hash, context_window)
+                );
                 """
             )
 
@@ -536,6 +549,59 @@ class Database:
                 VALUES (?, ?, ?)
                 """,
                 (event_type, content, utc_now()),
+            )
+
+    def cached_local_novel_summary(self, content_hash: str, context_window: int) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT summary
+                FROM local_novel_summaries
+                WHERE content_hash = ? AND context_window = ?
+                """,
+                (content_hash, context_window),
+            ).fetchone()
+        return str(row["summary"]) if row else None
+
+    def save_local_novel_summary(
+        self,
+        *,
+        content_hash: str,
+        context_window: int,
+        path: Path,
+        title: str,
+        text_chars: int,
+        chunk_count: int,
+        summary: str,
+    ) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO local_novel_summaries(
+                    content_hash, context_window, path, title, text_chars,
+                    chunk_count, summary, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(content_hash, context_window) DO UPDATE SET
+                    path=excluded.path,
+                    title=excluded.title,
+                    text_chars=excluded.text_chars,
+                    chunk_count=excluded.chunk_count,
+                    summary=excluded.summary,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    content_hash,
+                    context_window,
+                    str(path),
+                    title,
+                    text_chars,
+                    chunk_count,
+                    summary,
+                    now,
+                    now,
+                ),
             )
 
     def recommendable_samples(self, limit: int) -> list[sqlite3.Row]:
