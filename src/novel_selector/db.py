@@ -55,6 +55,23 @@ class Database:
                     FOREIGN KEY(source_id) REFERENCES sources(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS source_capabilities (
+                    source_id TEXT PRIMARY KEY,
+                    supports_search INTEGER NOT NULL DEFAULT 0,
+                    returns_metadata INTEGER NOT NULL DEFAULT 0,
+                    detects_completion INTEGER NOT NULL DEFAULT 0,
+                    supports_toc INTEGER NOT NULL DEFAULT 0,
+                    supports_content INTEGER NOT NULL DEFAULT 0,
+                    requires_webview INTEGER NOT NULL DEFAULT 0,
+                    unstable INTEGER NOT NULL DEFAULT 0,
+                    passed INTEGER NOT NULL DEFAULT 0,
+                    success_rate REAL NOT NULL DEFAULT 0,
+                    last_error_type TEXT,
+                    last_error TEXT,
+                    checked_at TEXT NOT NULL,
+                    FOREIGN KEY(source_id) REFERENCES sources(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS discovery_runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     started_at TEXT NOT NULL,
@@ -183,14 +200,104 @@ class Database:
                 )
         return len(sources)
 
-    def list_sources(self, limit: int | None = None) -> list[dict]:
+    def list_sources(self, limit: int | None = None, capable_only: bool = False) -> list[dict]:
         sql = "SELECT raw_json FROM sources WHERE enabled = 1 AND source_type = 0 ORDER BY name"
         params: tuple = ()
+        if capable_only:
+            sql = """
+                SELECT s.raw_json
+                FROM sources s
+                JOIN source_capabilities c ON c.source_id = s.id
+                WHERE s.enabled = 1 AND s.source_type = 0 AND c.passed = 1
+                ORDER BY s.name
+            """
         if limit:
             sql += " LIMIT ?"
             params = (limit,)
         with self.connect() as conn:
             return [json.loads(row["raw_json"]) for row in conn.execute(sql, params)]
+
+    def has_source_capabilities(self) -> bool:
+        with self.connect() as conn:
+            row = conn.execute("SELECT 1 FROM source_capabilities LIMIT 1").fetchone()
+            return row is not None
+
+    def save_source_capability(self, source_id: str, result: dict) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO source_capabilities(
+                    source_id, supports_search, returns_metadata, detects_completion,
+                    supports_toc, supports_content, requires_webview, unstable, passed,
+                    success_rate, last_error_type, last_error, checked_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_id) DO UPDATE SET
+                    supports_search=excluded.supports_search,
+                    returns_metadata=excluded.returns_metadata,
+                    detects_completion=excluded.detects_completion,
+                    supports_toc=excluded.supports_toc,
+                    supports_content=excluded.supports_content,
+                    requires_webview=excluded.requires_webview,
+                    unstable=excluded.unstable,
+                    passed=excluded.passed,
+                    success_rate=excluded.success_rate,
+                    last_error_type=excluded.last_error_type,
+                    last_error=excluded.last_error,
+                    checked_at=excluded.checked_at
+                """,
+                (
+                    source_id,
+                    1 if result.get("supports_search") else 0,
+                    1 if result.get("returns_metadata") else 0,
+                    1 if result.get("detects_completion") else 0,
+                    1 if result.get("supports_toc") else 0,
+                    1 if result.get("supports_content") else 0,
+                    1 if result.get("requires_webview") else 0,
+                    1 if result.get("unstable") else 0,
+                    1 if result.get("passed") else 0,
+                    float(result.get("success_rate") or 0),
+                    result.get("last_error_type"),
+                    result.get("last_error"),
+                    now,
+                ),
+            )
+
+    def source_capability_summary(self) -> dict:
+        with self.connect() as conn:
+            total = _count(conn, "source_capabilities")
+            passed = _count(conn, "source_capabilities", "passed = 1")
+            search_only = _count(
+                conn,
+                "source_capabilities",
+                "supports_search = 1 AND supports_content = 0",
+            )
+            unknown_completion = _count(
+                conn,
+                "source_capabilities",
+                "supports_search = 1 AND detects_completion = 0",
+            )
+            errors = {
+                row["last_error_type"] or "unknown": row["count"]
+                for row in conn.execute(
+                    """
+                    SELECT last_error_type, COUNT(*) AS count
+                    FROM source_capabilities
+                    WHERE passed = 0
+                    GROUP BY last_error_type
+                    ORDER BY count DESC
+                    LIMIT 5
+                    """
+                )
+            }
+        return {
+            "total_checked": total,
+            "passed": passed,
+            "search_only": search_only,
+            "unknown_completion": unknown_completion,
+            "top_errors": errors,
+        }
 
     def create_discovery_run(self, limit: int, seeds: list[SearchSeed]) -> int:
         now = utc_now()
@@ -383,6 +490,7 @@ class Database:
             "feedback_events": 0,
             "preference_events": 0,
             "has_initial_profile": False,
+            "source_capabilities": {"checked": 0, "passed": 0},
         }
         if not self.is_initialized():
             return empty
@@ -413,6 +521,10 @@ class Database:
             stats["source_health"] = {
                 row["status"]: row["count"]
                 for row in conn.execute("SELECT status, COUNT(*) AS count FROM source_health GROUP BY status")
+            }
+            stats["source_capabilities"] = {
+                "checked": _count(conn, "source_capabilities"),
+                "passed": _count(conn, "source_capabilities", "passed = 1"),
             }
             return stats
 

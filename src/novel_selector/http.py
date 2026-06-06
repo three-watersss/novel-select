@@ -27,20 +27,34 @@ class HttpClient:
 
     def get(self, url: str, base_url: str | None = None, headers: dict | None = None) -> FetchResult:
         final_url = urljoin(base_url, url) if base_url else url
+        return self.request("GET", final_url, headers=headers)
+
+    def post(
+        self,
+        url: str,
+        base_url: str | None = None,
+        headers: dict | None = None,
+        data: str | dict | None = None,
+    ) -> FetchResult:
+        final_url = urljoin(base_url, url) if base_url else url
+        return self.request("POST", final_url, headers=headers, data=data)
+
+    def request(self, method: str, url: str, headers: dict | None = None, data: str | dict | None = None) -> FetchResult:
         merged_headers = {"User-Agent": self.user_agent}
         if headers:
             merged_headers.update(headers)
         started = time.monotonic()
-        source_event("request_start", url=final_url, base_url=base_url)
+        source_event("request_start", method=method.upper(), url=url)
         with httpx.Client(timeout=self.timeout, follow_redirects=True, headers=merged_headers) as client:
             try:
-                response = client.get(final_url)
+                response = client.request(method.upper(), url, data=data)
                 response.raise_for_status()
             except httpx.TimeoutException as exc:
                 source_event(
                     "request_timeout",
                     "WARNING",
-                    url=final_url,
+                    method=method.upper(),
+                    url=url,
                     timeout=self.timeout,
                     duration_seconds=round(time.monotonic() - started, 3),
                     error=str(exc),
@@ -51,7 +65,8 @@ class HttpClient:
                 source_event(
                     "request_failed",
                     "WARNING" if status_code == 403 else "ERROR",
-                    url=final_url,
+                    method=method.upper(),
+                    url=url,
                     status_code=status_code,
                     reason="forbidden" if status_code == 403 else "http_status",
                     duration_seconds=round(time.monotonic() - started, 3),
@@ -61,7 +76,8 @@ class HttpClient:
                 source_event(
                     "request_failed",
                     "ERROR",
-                    url=final_url,
+                    method=method.upper(),
+                    url=url,
                     reason="http_error",
                     duration_seconds=round(time.monotonic() - started, 3),
                     error=str(exc),

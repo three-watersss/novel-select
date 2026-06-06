@@ -17,6 +17,22 @@ def test_status_bypasses_local_novel_check(tmp_path, monkeypatch, capsys):
     assert "not initialized" in output
 
 
+def test_filter_sources_bypasses_local_novel_check(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("NOVEL_SELECTOR_DB", str(tmp_path / "app.sqlite3"))
+    monkeypatch.setenv("NOVEL_SELECTOR_NOVELS_DIR", str(tmp_path / "missing-novels"))
+
+    def fake_filter(self, seed, limit=None, min_success_rate=1.0, include_unstable=False):
+        return [], {}
+
+    monkeypatch.setattr("novel_selector.cli.SourceFilterService.filter_sources", fake_filter)
+
+    code = main(["filter-sources", "--limit", "1"])
+
+    output = capsys.readouterr().out
+    assert code == 0
+    assert "Source filter finished" in output
+
+
 def test_show_profile_missing_profile_prompts_init(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("NOVEL_SELECTOR_DB", str(tmp_path / "app.sqlite3"))
     monkeypatch.setenv("NOVEL_SELECTOR_NOVELS_DIR", str(tmp_path / "missing-novels"))

@@ -28,6 +28,19 @@ uv run novel-selector init  # novels/ 不足 20 本时会提示补充本地喜�
 
 ## 已完成重点任务
 
+### 5. Legado source compatibility expansion
+
+- Added support for common static Legado rule patterns: `##` replacement/cleanup, `@put` / `@get` variable passing, `{{...}}` templates, POST search request metadata, source headers/cookies, paged `nextTocUrl`, and paged `nextContentUrl`.
+- Expanded unsupported-source detection across search, book info, TOC, and content rules so JS/WebView/captcha-dependent sources are skipped instead of retried blindly.
+- Added focused regression tests for variable/template handling, replacement rules, and POST request parsing.
+
+### 6. Source filtering CLI
+
+- Added `uv run novel-selector filter-sources` with `--seed`, `--limit`, `--min-success-rate`, and `--include-unstable`.
+- Added `source_capabilities` persistence for search, metadata, completion detection, TOC, content, WebView/unstable markers, success rate, and top error types.
+- `discover` now uses passed source capabilities when filter results exist, while preserving the old all-source behavior before the first filter run.
+- `status` now reports source filter pass/check counts.
+
 ### 1. 完整日志系统
 
 - 新增统一日志模块。

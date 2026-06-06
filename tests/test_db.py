@@ -34,3 +34,36 @@ def test_discovered_novel_excludes_future_discovery(tmp_path):
     assert novel_id_2 == novel_id
     assert created_2 is False
 
+
+def test_source_capability_whitelist_filters_sources(tmp_path):
+    db = Database(tmp_path / "test.sqlite3")
+    db.init()
+    sources = [
+        {"bookSourceName": "ok", "bookSourceUrl": "https://ok.test", "bookSourceType": 0},
+        {"bookSourceName": "bad", "bookSourceUrl": "https://bad.test", "bookSourceType": 0},
+    ]
+    db.replace_sources(sources)
+
+    with db.connect() as conn:
+        rows = conn.execute("SELECT id, name FROM sources ORDER BY name").fetchall()
+    bad_id = rows[0]["id"]
+    ok_id = rows[1]["id"]
+    db.save_source_capability(
+        ok_id,
+        {
+            "supports_search": True,
+            "returns_metadata": True,
+            "detects_completion": True,
+            "supports_toc": True,
+            "supports_content": True,
+            "passed": True,
+            "success_rate": 1.0,
+        },
+    )
+    db.save_source_capability(bad_id, {"last_error_type": "empty_search"})
+
+    assert db.has_source_capabilities() is True
+    assert [source["bookSourceName"] for source in db.list_sources(capable_only=True)] == ["ok"]
+    summary = db.source_capability_summary()
+    assert summary["passed"] == 1
+    assert summary["top_errors"]["empty_search"] == 1

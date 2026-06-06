@@ -41,7 +41,8 @@ class DiscoveryService:
         found = 0
         candidates = 0
         stats: Counter = Counter()
-        sources = prioritize_sources(self.db.list_sources())
+        sources = self.db.list_sources(capable_only=self.db.has_source_capabilities())
+        sources = prioritize_sources(sources)
         if source_limit:
             sources = sources[:source_limit]
         searches = 0

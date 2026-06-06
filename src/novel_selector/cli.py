@@ -17,10 +17,11 @@ from .llm import LLMClient
 from .logger import configure_logging, workflow_event
 from .recommender import RecommendationService
 from .sampling import SamplingService
+from .source_filter import SourceFilterService
 from .sources import sync_sources
 
 
-BYPASS_NOVEL_CHECK = {"clear", "status", "show-profile", "doctor"}
+BYPASS_NOVEL_CHECK = {"clear", "status", "show-profile", "doctor", "filter-sources"}
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class CommandInfo:
 
 
 COMMANDS = [
+    CommandInfo("filter-sources", "Test and whitelist usable book sources"),
     CommandInfo("init", "初始化数据库并构建初始画像"),
     CommandInfo("clear", "清理数据库，重置为未初始化状态"),
     CommandInfo("sync-sources", "同步 Legado/阅读书源"),
@@ -81,6 +83,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sync = sub.add_parser("sync-sources", help=_description("sync-sources"))
     sync.add_argument("--url", help="Override the Legado source JSON URL.")
+
+    filter_sources = sub.add_parser("filter-sources", help="Test and whitelist usable book sources.")
+    filter_sources.add_argument("--seed", default="修仙", help="Search keyword used to test sources.")
+    filter_sources.add_argument("--limit", type=int, help="Limit number of sources for quick testing.")
+    filter_sources.add_argument(
+        "--min-success-rate",
+        type=float,
+        default=1.0,
+        help="Minimum stage success rate required to pass.",
+    )
+    filter_sources.add_argument(
+        "--include-unstable",
+        action="store_true",
+        help="Include unstable sources in diagnostic evaluation.",
+    )
 
     discover = sub.add_parser("discover", help=_description("discover"))
     discover.add_argument("--limit", type=int, default=100, help="Number of completed candidates to collect.")
@@ -206,6 +223,24 @@ def run_command(
         count = sync_sources(db, http, args.url or settings.source_url)
         workflow_event("sync_sources_summary", source_count=count, db_path=settings.db_path)
         print(f"Synced {count} sources into {settings.db_path}")
+        return 0
+
+    if args.command == "filter-sources":
+        results, stats = SourceFilterService(db, legado).filter_sources(
+            seed=args.seed,
+            limit=args.limit,
+            min_success_rate=args.min_success_rate,
+            include_unstable=args.include_unstable,
+        )
+        summary = db.source_capability_summary()
+        workflow_event("filter_sources_summary", stats=dict(stats), summary=summary)
+        print(f"Source filter finished: checked={len(results)}, passed={summary['passed']}")
+        print(f"  search_available_not_sampleable: {summary['search_only']}")
+        print(f"  completion_unknown: {summary['unknown_completion']}")
+        if summary["top_errors"]:
+            print("  top_errors:")
+            for key, value in summary["top_errors"].items():
+                print(f"    {key}: {value}")
         return 0
 
     if args.command == "discover":

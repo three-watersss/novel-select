@@ -20,12 +20,14 @@ def status_text(settings: Settings, db: Database) -> str:
     novel_count = len(list_local_novels(settings.novels_dir))
     health = stats["source_health"]
     health_text = ", ".join(f"{key}={value}" for key, value in sorted(health.items())) or "none"
+    capabilities = stats["source_capabilities"]
     lines = [
         "Novel Selector Status",
         f"- Database: {settings.db_path} ({'initialized' if stats['initialized'] else 'not initialized'})",
         f"- Local favorite novels: {novel_count}/{MIN_PROFILE_NOVELS} txt files in {settings.novels_dir}",
         f"- Preference profile: {'ready' if stats['has_initial_profile'] else 'missing'}",
         f"- Sources: {stats['sources']} (health: {health_text})",
+        f"- Source filter: {capabilities['passed']}/{capabilities['checked']} passed",
         f"- Novels discovered: {stats['novels']} total, {stats['completed_novels']} completed candidates",
         f"- Samples: {stats['samples']} saved, {stats['pending_samples']} pending",
         f"- Recommendation runs: {stats['recommendation_runs']}"
