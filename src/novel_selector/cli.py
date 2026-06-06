@@ -278,7 +278,8 @@ def run_command(
             row = rows.get(rec.novel_id)
             title = row["title"] if row else f"novel:{rec.novel_id}"
             author = row["author"] if row else ""
-            print(f"\n{rank}. {title} - {author} [{rec.score:.1f}]")
+            marker = "[探索] " if rec.recommendation_type == "exploration" else ""
+            print(f"\n{rank}. {marker}{title} - {author} [{rec.score:.1f}]")
             print(f"推荐理由：{rec.reason}")
             print(f"风险点：{rec.risks}")
             print(f"文风：{rec.style}")
@@ -287,13 +288,13 @@ def run_command(
         return 0
 
     if args.command == "feedback":
-        return feedback(db)
+        return feedback(db, llm)
 
     parser.print_help()
     return 1
 
 
-def feedback(db: Database) -> int:
+def feedback(db: Database, llm: LLMClient) -> int:
     rows = db.latest_recommendations()
     if not rows:
         print("No recommendation run found.")
@@ -304,6 +305,7 @@ def feedback(db: Database) -> int:
     raw = input("输入选中的 novel_id，多个用逗号分隔；如果都不选，直接回车：").strip()
     selected_ids = {int(x.strip()) for x in raw.split(",") if x.strip().isdigit()}
     saved = 0
+    feedback_context: list[dict] = []
     for row in rows:
         selected = int(row["novel_id"]) in selected_ids
         prompt = "选择理由" if selected else "跳过理由（可空）"
@@ -311,8 +313,36 @@ def feedback(db: Database) -> int:
         if selected or reason:
             db.add_feedback(int(row["novel_id"]), selected, reason)
             saved += 1
+        feedback_context.append(
+            {
+                "novel_id": int(row["novel_id"]),
+                "title": row["title"],
+                "author": row["author"],
+                "recommendation_type": row["recommendation_type"],
+                "score": row["score"],
+                "recommend_reason": row["reason"],
+                "recommend_risks": row["risks"],
+                "selected": selected,
+                "feedback_reason": reason,
+            }
+        )
     workflow_event("feedback_summary", selected_count=len(selected_ids), feedback_saved=saved)
     print("Feedback saved.")
+    if saved:
+        try:
+            profile = llm.update_preference_profile(db.preference_profile(), feedback_context)
+            db.add_preference_event("profile_update", profile)
+            workflow_event("preference_profile_updated", feedback_count=saved, profile_chars=len(profile))
+            print(f"Preference profile updated. chars={len(profile)}")
+        except Exception as exc:
+            workflow_event(
+                "preference_profile_update_failed",
+                "WARNING",
+                feedback_count=saved,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            print(f"反馈已保存，但画像更新失败：{exc}")
     return 0
 
 

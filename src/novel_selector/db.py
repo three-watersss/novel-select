@@ -139,6 +139,7 @@ class Database:
                     run_id INTEGER NOT NULL,
                     novel_id INTEGER NOT NULL,
                     rank INTEGER NOT NULL,
+                    recommendation_type TEXT NOT NULL DEFAULT 'preference',
                     score REAL NOT NULL,
                     reason TEXT NOT NULL,
                     risks TEXT NOT NULL,
@@ -181,6 +182,7 @@ class Database:
                 );
                 """
             )
+            self._ensure_column(conn, "recommendation_items", "recommendation_type", "TEXT NOT NULL DEFAULT 'preference'")
 
     def replace_sources(self, sources: list[dict]) -> int:
         now = utc_now()
@@ -457,6 +459,17 @@ class Database:
 
     def preference_profile(self) -> str:
         with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT content
+                FROM preference_events
+                WHERE event_type IN ('profile_update', 'initial_profile')
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is not None:
+                return str(row["content"])
             rows = conn.execute(
                 "SELECT event_type, content, created_at FROM preference_events ORDER BY id DESC LIMIT 20"
             ).fetchall()
@@ -637,14 +650,15 @@ class Database:
                 conn.execute(
                     """
                     INSERT INTO recommendation_items(
-                        run_id, novel_id, rank, score, reason, risks, style, pacing, verdict, created_at
+                        run_id, novel_id, rank, recommendation_type, score, reason, risks, style, pacing, verdict, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
                         rec.novel_id,
                         rank,
+                        rec.recommendation_type,
                         rec.score,
                         rec.reason,
                         rec.risks,
@@ -684,14 +698,12 @@ class Database:
                 """,
                 (novel_id, 1 if selected else 0, reason, now),
             )
-            event_type = "selected" if selected else "skipped"
-            conn.execute(
-                """
-                INSERT INTO preference_events(event_type, content, created_at)
-                VALUES (?, ?, ?)
-                """,
-                (event_type, reason, now),
-            )
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def source_id(source: dict) -> str:

@@ -18,7 +18,7 @@ def test_cli_blocks_without_enough_local_novels(tmp_path, monkeypatch, capsys):
     code = main(["init"])
 
     assert code == 1
-    assert "10" in capsys.readouterr().out
+    assert "5" in capsys.readouterr().out
 
 
 def test_clear_bypasses_local_novel_check(tmp_path, monkeypatch, capsys):

@@ -10,7 +10,7 @@ from .llm import LLMClient
 from .logger import llm_event, workflow_event
 
 
-MIN_PROFILE_NOVELS = 10
+MIN_PROFILE_NOVELS = 5
 ENCODINGS = ("utf-8-sig", "utf-8", "gb18030")
 CHAPTER_HEADING = re.compile(
     r"^\s*(?:"

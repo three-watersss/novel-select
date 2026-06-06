@@ -42,4 +42,4 @@ class Recommendation:
     style: str
     pacing: str
     verdict: str
-
+    recommendation_type: str = "preference"

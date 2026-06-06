@@ -54,11 +54,15 @@ class LLMClient:
         return OpenAI(**kwargs)
 
     def generate_search_seeds(self, profile: str, count: int = 12) -> list[SearchSeed]:
+        preference_count = min(6, count)
+        builtin_count = min(4, max(0, count - preference_count))
+        exploration_count = min(2, max(0, count - preference_count - builtin_count))
         seeds: list[SearchSeed] = []
         if self.enabled:
             prompt = (
                 "你是一个网络小说找书助手。根据用户偏好画像，生成适合搜索完本小说的中文关键词。\n"
-                "要求：覆盖不同题材，不要只围绕同义词；每个关键词 2-8 个汉字或词组；返回 JSON 数组字符串。\n\n"
+                f"要求：返回 {preference_count} 个画像相关关键词，覆盖不同题材，不要只围绕同义词；"
+                "每个关键词 2-8 个汉字或词组；返回 JSON 数组字符串。\n\n"
                 f"偏好画像：\n{profile}\n"
             )
             llm_event(
@@ -105,14 +109,23 @@ class LLMClient:
                 seeds = []
         else:
             llm_event("fallback_used", purpose="generate_search_seeds", reason="missing_api_key")
-        builtins = random.sample(FALLBACK_SEEDS, k=min(len(FALLBACK_SEEDS), count))
-        reverse = random.sample(EXPLORATION_SEEDS, k=min(len(EXPLORATION_SEEDS), 4))
-        seeds.extend(SearchSeed(value=s, strategy="builtin_genre") for s in builtins)
-        seeds.extend(SearchSeed(value=s, strategy="random_exploration") for s in reverse)
-        deduped: dict[str, SearchSeed] = {}
-        for seed in seeds:
-            deduped.setdefault(seed.value, seed)
-        return list(deduped.values())[:count]
+        preference = _dedupe(seeds)[:preference_count]
+        builtins = [
+            SearchSeed(value=s, strategy="builtin_genre")
+            for s in random.sample(FALLBACK_SEEDS, k=len(FALLBACK_SEEDS))
+        ]
+        explorations = [
+            SearchSeed(value=s, strategy="random_exploration")
+            for s in random.sample(EXPLORATION_SEEDS, k=len(EXPLORATION_SEEDS))
+        ]
+        result = _dedupe(
+            preference
+            + _take_new(builtins, preference, builtin_count)
+            + _take_new(explorations, preference + builtins, exploration_count)
+        )
+        if len(result) < count:
+            result = _dedupe(result + _take_new(builtins + explorations, result, count - len(result)))
+        return result[:count]
 
     def score_candidates(self, profile: str, rows: list, k: int) -> list[Recommendation]:
         if not rows:
@@ -132,8 +145,15 @@ class LLMClient:
             ]
             prompt = (
                 "你正在模拟用户挑选网络小说。请根据偏好画像阅读候选小说前几章试读，选择最值得推荐的作品。\n"
-                "返回 JSON 数组，每项字段必须包含：novel_id, score(0-100), reason, risks, style, pacing, verdict。\n"
-                f"最多返回 {k} 项，按推荐程度降序。\n\n"
+                "返回 JSON 数组，每项字段必须包含：novel_id, recommendation_type, score(0-100), reason, risks, style, pacing, verdict。\n"
+                "recommendation_type 只能是 preference 或 exploration。\n"
+                + (
+                    f"最多返回 {k} 项：其中 {k - 1} 项应强匹配用户偏好，recommendation_type=preference；"
+                    "另 1 项应是不强匹配画像但你判断用户可能会喜欢的探索推荐，recommendation_type=exploration。"
+                    if k > 1
+                    else "最多返回 1 项，recommendation_type=preference。"
+                )
+                + "\n按综合推荐价值降序。\n\n"
                 f"偏好画像：\n{profile}\n\n候选：\n{json.dumps(payload, ensure_ascii=False)}"
             )
             llm_event(
@@ -179,6 +199,26 @@ class LLMClient:
         else:
             llm_event("fallback_used", purpose="score_candidates", reason="missing_api_key", candidate_count=len(rows))
         return heuristic_recommendations(rows, k)
+
+    def update_preference_profile(self, current_profile: str, feedback_context: list[dict]) -> str:
+        if not self.enabled:
+            raise RuntimeError("LLM is required to update the preference profile")
+        prompt = (
+            "你正在根据用户对小说推荐的反馈更新用户偏好画像。请输出一份新的完整中文偏好画像，"
+            "用于后续搜索和推荐。\n"
+            "要求：保留仍然有效的长期偏好；吸收本轮选择/跳过理由；区分强偏好、弱偏好、探索方向、明确避雷；"
+            "不要只追加流水账，不要输出 JSON。\n\n"
+            f"当前画像：\n{current_profile}\n\n"
+            f"本轮反馈：\n{json.dumps(feedback_context, ensure_ascii=False)}"
+        )
+        llm_event(
+            "request_start",
+            model=self.settings.openai_model,
+            purpose="update_preference_profile",
+            feedback_count=len(feedback_context),
+            prompt=prompt_summary(prompt),
+        )
+        return self._complete_text(prompt, purpose="update_preference_profile")
 
     def summarize_local_novel(self, title: str, chunks: list[str]) -> str:
         if not self.enabled:
@@ -286,6 +326,7 @@ def heuristic_recommendations(rows: list, k: int) -> list[Recommendation]:
                 style="待 LLM 判断",
                 pacing="待 LLM 判断",
                 verdict="可作为候选，但建议启用 LLM 后再做最终选择。",
+                recommendation_type="preference",
             )
         )
     return recs
@@ -300,6 +341,7 @@ def _rec(item: dict) -> Recommendation:
         style=str(item.get("style", "")),
         pacing=str(item.get("pacing", "")),
         verdict=str(item.get("verdict", "")),
+        recommendation_type=_recommendation_type(item.get("recommendation_type")),
     )
 
 
@@ -312,3 +354,29 @@ def _extract_json(content: str) -> str:
     start = min([i for i in [content.find("["), content.find("{")] if i >= 0], default=0)
     end = max(content.rfind("]"), content.rfind("}"))
     return content[start : end + 1] if end >= start else content
+
+
+def _dedupe(seeds: list[SearchSeed]) -> list[SearchSeed]:
+    deduped: dict[str, SearchSeed] = {}
+    for seed in seeds:
+        value = seed.value.strip()
+        if value:
+            deduped.setdefault(value, SearchSeed(value=value, strategy=seed.strategy))
+    return list(deduped.values())
+
+
+def _take_new(candidates: list[SearchSeed], existing: list[SearchSeed], count: int) -> list[SearchSeed]:
+    existing_values = {seed.value for seed in existing}
+    result: list[SearchSeed] = []
+    for seed in candidates:
+        if seed.value in existing_values:
+            continue
+        result.append(seed)
+        existing_values.add(seed.value)
+        if len(result) >= count:
+            break
+    return result
+
+
+def _recommendation_type(value: object) -> str:
+    return "exploration" if str(value).strip() == "exploration" else "preference"
