@@ -83,7 +83,29 @@ def test_score_candidates_parses_recommendation_type(monkeypatch):
     recs = LLMClient(settings()).score_candidates("喜欢智斗", rows, k=2)
 
     assert recs[0].recommendation_type == "exploration"
-    assert "1 项应是不强匹配画像" in fake.prompts[0]
+    assert "最多包含 1 项不强匹配画像" in fake.prompts[0]
+
+
+def test_score_candidates_prompt_allows_empty_recommendations(monkeypatch):
+    fake = FakeClient("[]")
+    monkeypatch.setattr(LLMClient, "_client", lambda self: fake)
+    rows = [
+        {
+            "id": 1,
+            "title": "测试书",
+            "author": "作者",
+            "kind": "玄幻",
+            "intro": "简介",
+            "chapter_count": 3,
+            "sample_text": "正文",
+        }
+    ]
+
+    recs = LLMClient(settings()).score_candidates("喜欢智斗", rows, k=5)
+
+    assert recs == []
+    assert "请返回空数组 []，不要为了凑数硬推荐" in fake.prompts[0]
+    assert "可以少于 5 项" in fake.prompts[0]
 
 
 def test_score_candidates_defaults_missing_recommendation_type(monkeypatch):

@@ -147,11 +147,12 @@ class LLMClient:
                 "你正在模拟用户挑选网络小说。请根据偏好画像阅读候选小说前几章试读，选择最值得推荐的作品。\n"
                 "返回 JSON 数组，每项字段必须包含：novel_id, recommendation_type, score(0-100), reason, risks, style, pacing, verdict。\n"
                 "recommendation_type 只能是 preference 或 exploration。\n"
+                "如果候选池中没有符合用户喜好、且不值得探索尝试的小说，请返回空数组 []，不要为了凑数硬推荐。\n"
                 + (
-                    f"最多返回 {k} 项：其中 {k - 1} 项应强匹配用户偏好，recommendation_type=preference；"
-                    "另 1 项应是不强匹配画像但你判断用户可能会喜欢的探索推荐，recommendation_type=exploration。"
+                    f"最多返回 {k} 项，可以少于 {k} 项：优先返回强匹配用户偏好的 preference；"
+                    "最多包含 1 项不强匹配画像但你判断用户可能会喜欢的 exploration。"
                     if k > 1
-                    else "最多返回 1 项，recommendation_type=preference。"
+                    else "最多返回 1 项；只有候选确实值得推荐时才返回。"
                 )
                 + "\n按综合推荐价值降序。\n\n"
                 f"偏好画像：\n{profile}\n\n候选：\n{json.dumps(payload, ensure_ascii=False)}"

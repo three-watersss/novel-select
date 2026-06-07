@@ -628,6 +628,11 @@ class Database:
                     WHERE NOT EXISTS (
                         SELECT 1 FROM recommendation_items ri WHERE ri.novel_id = n.id
                     )
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM feedback_events fe
+                        WHERE fe.novel_id = n.id AND fe.selected = 0
+                    )
                     ORDER BY s.sampled_at
                     LIMIT ?
                     """,

@@ -100,3 +100,19 @@ def test_unrecommended_sample_can_remain_recommendable(tmp_path):
 
     assert selected_id not in recommendable_ids
     assert skipped_id in recommendable_ids
+
+
+def test_disliked_sample_is_not_recommendable_again(tmp_path):
+    db = Database(tmp_path / "app.sqlite3")
+    db.init()
+    disliked_id = add_discovered(db, "明确不喜欢")
+    liked_id = add_discovered(db, "明确喜欢")
+    untouched_id = add_discovered(db, "未反馈")
+    db.add_feedback(disliked_id, selected=False, reason="不喜欢这个套路")
+    db.add_feedback(liked_id, selected=True, reason="喜欢这个方向")
+
+    recommendable_ids = [row["id"] for row in db.recommendable_samples(10)]
+
+    assert disliked_id not in recommendable_ids
+    assert liked_id in recommendable_ids
+    assert untouched_id in recommendable_ids
